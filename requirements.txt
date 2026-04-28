@@ -1,0 +1,14 @@
+# API Client - Enterprise Edition
+# Python 依賴套件
+
+# 核心 HTTP 請求庫
+requests>=2.28.0
+
+# 可選: 非同步 HTTP 支援 (未來擴展)
+# aiohttp>=3.8.0
+
+# 可選: 更好的 HTTP/2 支援
+# httpx>=0.24.0
+
+# 可選: 環境變數管理
+# python-dotenv>=1.0.0
