@@ -2,6 +2,7 @@
 HTTP 客戶端模組
 提供企業級的 HTTP 請求處理功能
 """
+import json
 import requests
 import time
 import uuid
@@ -196,6 +197,32 @@ class HttpClient:
             request_id=request_id,
             error=str(last_error) if last_error else "未知錯誤"
         )
+
+    @staticmethod
+    def _is_streaming_request(request: HttpRequest) -> bool:
+        """檢查請求主體是否宣告為串流回應模式"""
+        if not request.body:
+            return False
+
+        try:
+            payload = json.loads(request.body)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+        return str(payload.get('response_mode', '')).lower() == 'streaming'
+
+    @staticmethod
+    def _is_blocking_request(request: HttpRequest) -> bool:
+        """檢查請求主體是否宣告為 blocking 回應模式"""
+        if not request.body:
+            return False
+
+        try:
+            payload = json.loads(request.body)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+        return str(payload.get('response_mode', '')).lower() == 'blocking'
     
     def _execute_request(self, request: HttpRequest, request_id: str) -> HttpResponse:
         """執行實際的 HTTP 請求"""
@@ -232,8 +259,11 @@ class HttpClient:
             
         except requests.exceptions.Timeout as e:
             elapsed_time = time.perf_counter() - start_time
+            message = f"請求逾時 (>{request.timeout}秒)"
+            if self._is_blocking_request(request):
+                message += "；此請求使用 blocking 模式，建議將逾時調高至 60 秒以上"
             raise TimeoutError(
-                f"請求逾時 (>{request.timeout}秒)",
+                message,
                 timeout_seconds=request.timeout
             )
             
@@ -247,9 +277,28 @@ class HttpClient:
         except requests.exceptions.ConnectionError as e:
             elapsed_time = time.perf_counter() - start_time
             parsed = urlparse(request.url)
+            error_text = str(e)
+
+            if 'Read timed out' in error_text or 'read timeout' in error_text.lower():
+                message = f"讀取回應逾時 (>{request.timeout}秒)"
+                if self._is_streaming_request(request):
+                    message += "；此請求使用 streaming 模式，伺服器可能尚未送出下一個事件"
+                elif self._is_blocking_request(request):
+                    message += "；此請求使用 blocking 模式，建議將逾時調高至 60 秒以上"
+
+                raise TimeoutError(
+                    f"{message}: {parsed.netloc}",
+                    timeout_seconds=request.timeout,
+                    details={
+                        'host': parsed.netloc,
+                        'original_error': error_text
+                    }
+                )
+
             raise ConnectionError(
-                f"無法連線到 {parsed.netloc}",
-                host=parsed.netloc
+                f"無法連線到 {parsed.netloc}: {error_text}",
+                host=parsed.netloc,
+                details={'original_error': error_text}
             )
             
         except requests.exceptions.RequestException as e:

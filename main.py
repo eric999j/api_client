@@ -24,7 +24,16 @@ except ImportError:
     ApiClientError = RuntimeError
 
 from logic import ApiClientOrchestrator
-from utils import format_json, format_size, format_headers_display, validate_url, validate_json
+from utils import (
+    DIFY_BLOCKING_RECOMMENDED_TIMEOUT,
+    format_json,
+    format_size,
+    format_headers_display,
+    get_dify_response_mode,
+    normalize_dify_request_body,
+    validate_url,
+    validate_json,
+)
 
 # 設定日誌
 if ENTERPRISE_MODE:
@@ -403,11 +412,37 @@ class ApiClientApp:
             if not is_valid:
                 if not messagebox.askyesno("JSON 格式警告", f"{error_msg}\n\n是否仍要發送請求？"):
                     return
+
+            normalized_body, moved_fields = normalize_dify_request_body(body)
+            if moved_fields:
+                field_list = ", ".join(moved_fields)
+                decision = messagebox.askyesnocancel(
+                    "Dify Payload 提醒",
+                    f"偵測到頂層欄位應移入 inputs：{field_list}\n\n選擇「是」會自動修正後送出；選擇「否」會保持原內容送出；選擇「取消」會返回編輯。"
+                )
+                if decision is None:
+                    return
+                if decision:
+                    body = normalized_body
+                    self.body_text.delete(1.0, tk.END)
+                    self.body_text.insert(1.0, body)
         
         try:
             timeout = float(self.timeout_var.get())
         except ValueError:
             timeout = 10
+
+        response_mode = get_dify_response_mode(body)
+        if response_mode == 'blocking' and timeout < DIFY_BLOCKING_RECOMMENDED_TIMEOUT:
+            decision = messagebox.askyesnocancel(
+                "Blocking Timeout 提醒",
+                f"偵測到此請求使用 blocking 模式，目前逾時為 {timeout:.0f} 秒。\n\n建議至少使用 {DIFY_BLOCKING_RECOMMENDED_TIMEOUT:.0f} 秒，否則很容易在工作流完成前逾時。\n\n選擇「是」會自動改為 {DIFY_BLOCKING_RECOMMENDED_TIMEOUT:.0f} 秒後送出；選擇「否」會保持目前值送出；選擇「取消」會返回編輯。"
+            )
+            if decision is None:
+                return
+            if decision:
+                timeout = DIFY_BLOCKING_RECOMMENDED_TIMEOUT
+                self.timeout_var.set(str(int(DIFY_BLOCKING_RECOMMENDED_TIMEOUT)))
             
         try:
             retry_count = int(self.retry_var.get())
@@ -666,7 +701,11 @@ class ApiClientApp:
                                     "display": item
                                 })
                         elif isinstance(item, dict):
-                            cleaned_data.append(item)
+                            history_item = dict(item)
+                            normalized_body, _ = normalize_dify_request_body(history_item.get("body", ""))
+                            if normalized_body != history_item.get("body", ""):
+                                history_item["body"] = normalized_body
+                            cleaned_data.append(history_item)
                     history_limit = self.get_history_limit()
                     return cleaned_data[-history_limit:]
             except Exception:

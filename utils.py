@@ -8,6 +8,19 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 
+DIFY_RESERVED_TOP_LEVEL_FIELDS = {
+    'inputs',
+    'query',
+    'response_mode',
+    'conversation_id',
+    'user',
+    'files',
+    'auto_generate_name'
+}
+
+DIFY_BLOCKING_RECOMMENDED_TIMEOUT = 60.0
+
+
 def format_json(content: str, indent: int = 4) -> str:
     """
     格式化 JSON 字串
@@ -204,6 +217,80 @@ def validate_json(content: str) -> tuple[bool, Optional[str]]:
         return True, None
     except json.JSONDecodeError as e:
         return False, f"JSON 格式錯誤 (行 {e.lineno}, 列 {e.colno}): {e.msg}"
+
+
+def normalize_dify_request_body(content: str) -> tuple[str, list[str]]:
+    """
+    將 Dify chat-messages payload 中誤放在頂層的自訂欄位移入 inputs
+
+    Args:
+        content: JSON 字串
+
+    Returns:
+        Tuple[正規化後的 JSON 字串, 被移入 inputs 的欄位列表]
+    """
+    if not content or not content.strip():
+        return content, []
+
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return content, []
+
+    if not isinstance(payload, dict):
+        return content, []
+
+    has_required_markers = 'query' in payload and 'user' in payload
+    has_dify_shape = any(key in payload for key in ('inputs', 'response_mode', 'conversation_id', 'files'))
+    if not (has_required_markers and has_dify_shape):
+        return content, []
+
+    inputs = payload.get('inputs')
+    if not isinstance(inputs, dict):
+        inputs = {}
+
+    moved_fields = [
+        key for key in payload.keys()
+        if key not in DIFY_RESERVED_TOP_LEVEL_FIELDS
+    ]
+    if not moved_fields:
+        return content, []
+
+    normalized_payload = dict(payload)
+    normalized_inputs = dict(inputs)
+
+    for key in moved_fields:
+        if key not in normalized_inputs:
+            normalized_inputs[key] = normalized_payload[key]
+        del normalized_payload[key]
+
+    normalized_payload['inputs'] = normalized_inputs
+    return json.dumps(normalized_payload, indent=2, ensure_ascii=False), moved_fields
+
+
+def get_dify_response_mode(content: str) -> Optional[str]:
+    """取得 Dify chat-messages payload 的 response_mode"""
+    if not content or not content.strip():
+        return None
+
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    has_required_markers = 'query' in payload and 'user' in payload
+    has_dify_shape = any(key in payload for key in ('inputs', 'response_mode', 'conversation_id', 'files'))
+    if not (has_required_markers and has_dify_shape):
+        return None
+
+    response_mode = payload.get('response_mode')
+    if response_mode is None:
+        return None
+
+    return str(response_mode).lower()
 
 
 def extract_variables(text: str) -> list[str]:

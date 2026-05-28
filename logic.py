@@ -5,7 +5,7 @@ API Client Orchestrator - 核心業務邏輯層
 import requests
 import time
 from typing import Tuple, Dict, Optional, Any
-from utils import parse_headers
+from utils import DIFY_BLOCKING_RECOMMENDED_TIMEOUT, get_dify_response_mode, parse_headers
 
 # 嘗試匯入新架構模組，如果失敗則使用原有邏輯
 try:
@@ -190,7 +190,14 @@ class ApiClientOrchestrator:
 
         except requests.exceptions.Timeout:
             elapsed_time = time.perf_counter() - start_time
-            error_msg = "錯誤: 請求逾時"
+            response_mode = get_dify_response_mode(body_text)
+            if response_mode == 'blocking':
+                error_msg = (
+                    f"錯誤: 請求逾時；此請求使用 blocking 模式，"
+                    f"建議將逾時調高至 {int(DIFY_BLOCKING_RECOMMENDED_TIMEOUT)} 秒以上"
+                )
+            else:
+                error_msg = "錯誤: 請求逾時"
             if NEW_ARCHITECTURE_AVAILABLE and logger:
                 logger.error(f"請求逾時: {method} {url}")
             return 0, "", error_msg, elapsed_time, {}, 0
@@ -202,11 +209,15 @@ class ApiClientOrchestrator:
                 logger.error(f"SSL 錯誤: {method} {url} - {e}")
             return 0, "", error_msg, elapsed_time, {}, 0
             
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as e:
             elapsed_time = time.perf_counter() - start_time
-            error_msg = "錯誤: 連線失敗 (請檢查 URL 或網路連線)"
+            error_text = str(e)
+            if 'Read timed out' in error_text or 'read timeout' in error_text.lower():
+                error_msg = f"錯誤: 讀取回應逾時 - {error_text}"
+            else:
+                error_msg = f"錯誤: 連線失敗 - {error_text}"
             if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.error(f"連線失敗: {method} {url}")
+                logger.error(f"連線失敗: {method} {url} - {error_text}")
             return 0, "", error_msg, elapsed_time, {}, 0
             
         except requests.exceptions.RequestException as e:
