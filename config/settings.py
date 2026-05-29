@@ -26,6 +26,7 @@ class AppConfig:
     # 歷史記錄設定
     max_history_items: int = 100
     history_file: str = "api_client_history.json"
+    current_environment: Optional[str] = None
     
     # 日誌設定
     log_level: str = "INFO"
@@ -85,7 +86,11 @@ class ConfigManager:
         
         self.app_config = self._load_app_config()
         self.environments: Dict[str, Environment] = self._load_environments()
-        self.current_environment: Optional[str] = None
+        configured_environment = self.app_config.current_environment
+        self.current_environment: Optional[str] = (
+            configured_environment if configured_environment in self.environments else None
+        )
+        self.app_config.current_environment = self.current_environment
         
         # 載入環境變數覆寫
         self._apply_env_overrides()
@@ -197,23 +202,41 @@ class ConfigManager:
         if name in self.environments:
             del self.environments[name]
             if self.current_environment == name:
-                self.current_environment = None
+                self.set_current_environment(None)
             self.save_environments()
+
+    def set_current_environment(self, name: Optional[str]):
+        """設定當前環境並持久化"""
+        self.current_environment = name if name in self.environments else None
+        self.app_config.current_environment = self.current_environment
+        self.save_config()
     
     def get_current_environment(self) -> Optional[Environment]:
         """取得當前環境"""
         if self.current_environment:
             return self.environments.get(self.current_environment)
         return None
+
+    def apply_environment_variables(self, text: str) -> str:
+        """將環境變數套用到任意文字內容"""
+        if not text:
+            return text
+
+        env = self.get_current_environment()
+        if env and env.variables:
+            for key, value in env.variables.items():
+                text = text.replace(f"{{{{{key}}}}}", value)
+
+        return text
     
     def resolve_url(self, url: str) -> str:
         """解析 URL - 替換變數並套用基礎 URL"""
         env = self.get_current_environment()
-        
-        # 替換變數 {{variable_name}}
-        if env and env.variables:
-            for key, value in env.variables.items():
-                url = url.replace(f"{{{{{key}}}}}", value)
+
+        url = self.apply_environment_variables(url)
+
+        if not url:
+            return env.base_url if env and env.base_url else url
         
         # 如果 URL 是相對路徑且有基礎 URL
         if env and not url.startswith(('http://', 'https://')):

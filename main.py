@@ -30,7 +30,9 @@ from utils import (
     format_size,
     format_headers_display,
     get_dify_response_mode,
+    headers_to_text,
     normalize_dify_request_body,
+    parse_headers,
     validate_url,
     validate_json,
 )
@@ -50,6 +52,7 @@ class ApiClientApp:
     
     HISTORY_FILE = "api_client_history.json"
     VERSION = "2.0.0"
+    DEFAULT_URL = "https://jsonplaceholder.typicode.com/posts/1"
     FALLBACK_HISTORY_ITEMS = 20
     MAX_SYNTAX_HIGHLIGHT_CHARS = 120_000
     JSON_STRING_PATTERN = re.compile(r'"(?:[^"\\]|\\.)*"')
@@ -79,9 +82,19 @@ class ApiClientApp:
         self.orchestrator = ApiClientOrchestrator()
         
         # 環境變數
-        self.current_environment = tk.StringVar(value="無")
+        initial_environment = "無"
+        if ENTERPRISE_MODE and config_manager and config_manager.current_environment:
+            initial_environment = config_manager.current_environment
+        self.current_environment = tk.StringVar(value=initial_environment)
+        self.url_var = tk.StringVar(value=self.DEFAULT_URL)
+        self.environment_summary_var = tk.StringVar(value="")
+        self.environment_details_var = tk.StringVar(value="")
 
         self.create_widgets()
+
+        if ENTERPRISE_MODE and config_manager:
+            self.apply_environment_to_request(None, config_manager.get_current_environment())
+        self.update_environment_context()
         
         # 確保所有組件創建後應用主題
         self.apply_theme()
@@ -259,7 +272,10 @@ class ApiClientApp:
         ttk.Label(toolbar, text="API Client Enterprise", font=('Segoe UI', 12, 'bold')).pack(side=tk.LEFT)
 
         # === 請求欄 ===
-        req_frame = ttk.Frame(self.root, padding="10")
+        req_container = ttk.Frame(self.root, padding="10")
+        req_container.pack(fill=tk.X, side=tk.TOP)
+
+        req_frame = ttk.Frame(req_container)
         req_frame.pack(fill=tk.X, side=tk.TOP)
 
         # Method Selector
@@ -271,9 +287,8 @@ class ApiClientApp:
 
         # URL Input
         ttk.Label(req_frame, text="URL:", font=('Segoe UI', 9, 'bold')).pack(side=tk.LEFT)
-        self.url_entry = ttk.Entry(req_frame, font=('Segoe UI', 10))
+        self.url_entry = ttk.Entry(req_frame, textvariable=self.url_var, font=('Segoe UI', 10))
         self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.url_entry.insert(0, "https://jsonplaceholder.typicode.com/posts/1")
 
         # Timeout Input
         ttk.Label(req_frame, text="逾時(s):", font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(5, 2))
@@ -296,6 +311,23 @@ class ApiClientApp:
         # Send Button
         self.send_btn = ttk.Button(req_frame, text="🚀 發送請求", style='Accent.TButton', command=self.on_send)
         self.send_btn.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.url_var.trace_add('write', self.update_environment_context)
+
+        context_frame = ttk.Frame(req_container)
+        context_frame.pack(fill=tk.X, side=tk.TOP, pady=(8, 0))
+
+        ttk.Label(
+            context_frame,
+            textvariable=self.environment_summary_var,
+            font=('Segoe UI', 9, 'bold')
+        ).pack(anchor=tk.W)
+        ttk.Label(
+            context_frame,
+            textvariable=self.environment_details_var,
+            font=('Segoe UI', 8),
+            foreground='gray'
+        ).pack(anchor=tk.W, pady=(2, 0))
 
         # === 中間區域: 標籤頁 (Headers & Body) ===
         self.paned_window = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
@@ -391,15 +423,25 @@ class ApiClientApp:
         self.response_headers_text.pack(fill=tk.BOTH, expand=True)
 
     def on_send(self):
-        url = self.url_entry.get().strip()
+        url = self.url_var.get().strip()
+        env = config_manager.get_current_environment() if ENTERPRISE_MODE and config_manager else None
+
         if not url:
-            messagebox.showwarning("警告", "請輸入 URL")
-            return
+            if env and env.base_url:
+                url = env.base_url
+                self.url_var.set(url)
+            else:
+                messagebox.showwarning("警告", "請輸入 URL")
+                return
         
         # 驗證 URL
-        is_valid, error_msg = validate_url(url)
+        resolved_url = self.build_resolved_request_url(url)
+        is_valid, error_msg = validate_url(resolved_url)
         if not is_valid and not url.startswith('{{'):  # 允許變數格式
-            messagebox.showwarning("URL 格式錯誤", error_msg)
+            extra_detail = ""
+            if resolved_url and resolved_url != url:
+                extra_detail = f"\n\n解析後 URL: {resolved_url}"
+            messagebox.showwarning("URL 格式錯誤", f"{error_msg}{extra_detail}")
             return
 
         method = self.method_var.get()
@@ -797,15 +839,235 @@ class ApiClientApp:
         if ENTERPRISE_MODE and config_manager:
             env_names.extend(config_manager.environments.keys())
         self.env_combo['values'] = env_names
+
+        selected = self.current_environment.get()
+        if selected not in env_names:
+            self.current_environment.set("無")
+        self.update_environment_context()
+
+    def build_resolved_request_url(self, url: str) -> str:
+        """建立目前請求的解析後 URL"""
+        if ENTERPRISE_MODE and config_manager:
+            return config_manager.resolve_url(url)
+        return url
+
+    def apply_environment_to_request(self, previous_env, current_env):
+        """依照環境切換結果更新目前請求目標"""
+        if not current_env or not current_env.base_url:
+            return
+
+        current_url = self.url_var.get().strip()
+        if not current_url or current_url == self.DEFAULT_URL:
+            self.url_var.set(current_env.base_url)
+            return
+
+        if previous_env and previous_env.base_url:
+            previous_base = previous_env.base_url.rstrip('/')
+            current_base = current_env.base_url.rstrip('/')
+            if current_url == previous_env.base_url:
+                self.url_var.set(current_env.base_url)
+                return
+            if current_url.startswith(previous_base + '/'):
+                suffix = current_url[len(previous_base):]
+                self.url_var.set(f"{current_base}{suffix}")
+
+    def update_environment_context(self, *args):
+        """更新環境摘要與解析後 URL 顯示"""
+        if not hasattr(self, 'environment_summary_var'):
+            return
+
+        if not ENTERPRISE_MODE or not config_manager:
+            self.environment_summary_var.set("環境功能未啟用")
+            self.environment_details_var.set("請輸入完整 URL")
+            return
+
+        env = config_manager.get_current_environment()
+        request_target = self.url_var.get().strip()
+
+        if not env:
+            self.environment_summary_var.set("目前未選擇環境")
+            self.environment_details_var.set("請輸入完整 URL；選擇環境後也可輸入相對路徑，例如 /v1/users")
+            return
+
+        auth_label = env.auth_type or "無認證"
+        header_count = len(env.headers)
+        variable_count = len(env.variables)
+        description = f" | {env.description}" if env.description else ""
+        self.environment_summary_var.set(
+            f"目前環境: {env.name} | Base URL: {env.base_url or '未設定'}{description}"
+        )
+
+        if request_target:
+            resolved_url = self.build_resolved_request_url(request_target)
+            self.environment_details_var.set(
+                f"解析後 URL: {resolved_url} | 預設 Headers: {header_count} | 變數: {variable_count} | 認證: {auth_label}"
+            )
+            return
+
+        self.environment_details_var.set(
+            f"將自動使用 Base URL；預設 Headers: {header_count} | 變數: {variable_count} | 認證: {auth_label}"
+        )
+
+    def format_environment_mapping(self, data, separator=" = "):
+        """格式化環境用的鍵值對"""
+        if not data:
+            return ""
+        return "\n".join(f"{key}{separator}{value}" for key, value in data.items())
+
+    def parse_environment_mapping(self, text):
+        """解析環境編輯器中的鍵值對"""
+        mapping = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            if '=' in line:
+                key, value = line.split('=', 1)
+            elif ':' in line:
+                key, value = line.split(':', 1)
+            else:
+                continue
+
+            key = key.strip()
+            value = value.strip()
+            if key:
+                mapping[key] = value
+
+        return mapping
+
+    def open_environment_editor(self, parent, refresh_callback, env=None):
+        """開啟新增/編輯環境視窗"""
+        editor = tk.Toplevel(parent)
+        editor.title("編輯環境" if env else "新增環境")
+        editor.geometry("620x560")
+        editor.transient(parent)
+        editor.grab_set()
+
+        original_name = env.name if env else None
+
+        form = ttk.Frame(editor, padding=15)
+        form.pack(fill=tk.BOTH, expand=True)
+        form.columnconfigure(1, weight=1)
+
+        ttk.Label(form, text="環境名稱:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=6)
+        name_entry = ttk.Entry(form, width=40)
+        name_entry.grid(row=0, column=1, sticky=tk.EW, pady=6)
+
+        ttk.Label(form, text="基礎 URL:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=6)
+        url_entry = ttk.Entry(form, width=40)
+        url_entry.grid(row=1, column=1, sticky=tk.EW, pady=6)
+
+        ttk.Label(form, text="說明:").grid(row=2, column=0, sticky=tk.W, padx=(0, 10), pady=6)
+        desc_entry = ttk.Entry(form, width=40)
+        desc_entry.grid(row=2, column=1, sticky=tk.EW, pady=6)
+
+        ttk.Label(form, text="認證方式:").grid(row=3, column=0, sticky=tk.W, padx=(0, 10), pady=6)
+        auth_var = tk.StringVar(value="none")
+        auth_combo = ttk.Combobox(
+            form,
+            textvariable=auth_var,
+            values=["none", "bearer", "basic", "api_key"],
+            state="readonly"
+        )
+        auth_combo.grid(row=3, column=1, sticky=tk.W, pady=6)
+
+        ttk.Label(form, text="認證值:").grid(row=4, column=0, sticky=tk.W, padx=(0, 10), pady=6)
+        auth_entry = ttk.Entry(form, width=40, show="*")
+        auth_entry.grid(row=4, column=1, sticky=tk.EW, pady=6)
+
+        ttk.Label(form, text="預設 Headers:").grid(row=5, column=0, sticky=tk.NW, padx=(0, 10), pady=6)
+        headers_text = tk.Text(form, height=7, width=50, font=("Consolas", 9), wrap=tk.NONE)
+        headers_text.grid(row=5, column=1, sticky=tk.EW, pady=6)
+
+        ttk.Label(form, text="環境變數:").grid(row=6, column=0, sticky=tk.NW, padx=(0, 10), pady=6)
+        variables_text = tk.Text(form, height=7, width=50, font=("Consolas", 9), wrap=tk.NONE)
+        variables_text.grid(row=6, column=1, sticky=tk.EW, pady=6)
+
+        ttk.Label(
+            form,
+            text="變數可用在 URL / Headers / Body，例如 {{tenant_id}}；支援 key=value 或 key: value。",
+            font=('Segoe UI', 8),
+            foreground='gray'
+        ).grid(row=7, column=0, columnspan=2, sticky=tk.W, pady=(4, 10))
+
+        if env:
+            name_entry.insert(0, env.name)
+            url_entry.insert(0, env.base_url)
+            desc_entry.insert(0, env.description)
+            auth_var.set(env.auth_type or "none")
+            if env.auth_value:
+                auth_entry.insert(0, env.auth_value)
+            if env.headers:
+                headers_text.insert(1.0, headers_to_text(env.headers))
+            if env.variables:
+                variables_text.insert(1.0, self.format_environment_mapping(env.variables))
+
+        def save_environment():
+            name = name_entry.get().strip()
+            base_url = url_entry.get().strip()
+            description = desc_entry.get().strip()
+
+            if not name:
+                messagebox.showwarning("警告", "請輸入環境名稱", parent=editor)
+                return
+
+            if name != original_name and name in config_manager.environments:
+                messagebox.showwarning("警告", f"環境 '{name}' 已存在", parent=editor)
+                return
+
+            if base_url:
+                is_valid, error_msg = validate_url(base_url)
+                if not is_valid:
+                    messagebox.showwarning("基礎 URL 格式錯誤", error_msg, parent=editor)
+                    return
+
+            auth_type = auth_var.get() if auth_var.get() != "none" else None
+            headers = parse_headers(headers_text.get(1.0, tk.END).strip())
+            variables = self.parse_environment_mapping(variables_text.get(1.0, tk.END).strip())
+
+            updated_env = Environment(
+                name=name,
+                base_url=base_url,
+                variables=variables,
+                headers=headers,
+                auth_type=auth_type,
+                auth_value=auth_entry.get().strip() if auth_type else None,
+                description=description,
+            )
+
+            was_current = original_name and config_manager.current_environment == original_name
+            if original_name and original_name != name:
+                config_manager.remove_environment(original_name)
+
+            config_manager.add_environment(updated_env)
+
+            if was_current:
+                config_manager.set_current_environment(name)
+                self.current_environment.set(name)
+
+            refresh_callback(selected_name=name)
+            self.update_environment_list()
+            self.update_environment_context()
+            editor.destroy()
+
+        action_frame = ttk.Frame(form)
+        action_frame.grid(row=8, column=0, columnspan=2, sticky=tk.E, pady=(10, 0))
+        ttk.Button(action_frame, text="取消", command=editor.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(action_frame, text="儲存", command=save_environment, style='Accent.TButton').pack(side=tk.RIGHT)
     
     def on_environment_change(self, event=None):
         """環境變更處理"""
         selected = self.current_environment.get()
         if ENTERPRISE_MODE and config_manager:
+            previous_env = config_manager.get_current_environment()
             if selected == "無":
-                config_manager.current_environment = None
+                config_manager.set_current_environment(None)
             else:
-                config_manager.current_environment = selected
+                config_manager.set_current_environment(selected)
+
+            self.apply_environment_to_request(previous_env, config_manager.get_current_environment())
+            self.update_environment_context()
             
             if logger:
                 logger.info(f"切換環境: {selected}", extra={'user_action': 'environment_change'})
@@ -818,116 +1080,153 @@ class ApiClientApp:
         
         env_win = tk.Toplevel(self.root)
         env_win.title("環境管理")
-        env_win.geometry("700x500")
+        env_win.geometry("820x620")
         env_win.transient(self.root)
+        env_win.grab_set()
         
         # 環境列表
         list_frame = ttk.LabelFrame(env_win, text="環境列表", padding=10)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        columns = ('name', 'base_url', 'auth_type')
+        columns = ('active', 'name', 'base_url', 'auth_type', 'variables')
         tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=10)
+        tree.heading('active', text='狀態')
         tree.heading('name', text='環境名稱')
         tree.heading('base_url', text='基礎 URL')
         tree.heading('auth_type', text='認證方式')
+        tree.heading('variables', text='變數數量')
+        tree.column('active', width=70, anchor=tk.CENTER)
         tree.column('name', width=120)
-        tree.column('base_url', width=350)
+        tree.column('base_url', width=360)
         tree.column('auth_type', width=100)
+        tree.column('variables', width=90, anchor=tk.CENTER)
         
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         tree.pack(fill=tk.BOTH, expand=True)
+
+        preview_frame = ttk.LabelFrame(env_win, text="環境預覽", padding=10)
+        preview_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        preview_text = tk.Text(preview_frame, height=12, font=("Consolas", 9), wrap=tk.WORD, state=tk.DISABLED)
+        preview_scrollbar = ttk.Scrollbar(preview_frame, orient=tk.VERTICAL, command=preview_text.yview)
+        preview_text.configure(yscrollcommand=preview_scrollbar.set)
+        preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        preview_text.pack(fill=tk.BOTH, expand=True)
+
+        def set_preview(content):
+            preview_text.config(state=tk.NORMAL)
+            preview_text.delete(1.0, tk.END)
+            preview_text.insert(1.0, content)
+            preview_text.config(state=tk.DISABLED)
+
+        def get_selected_environment_name():
+            selection = tree.selection()
+            if not selection:
+                return None
+            item = tree.item(selection[0])
+            values = item.get('values', [])
+            return values[1] if len(values) > 1 else None
         
         # 填充資料
-        def refresh_list():
+        def refresh_list(selected_name=None):
             for item in tree.get_children():
                 tree.delete(item)
+            current_name = config_manager.current_environment
             for name, env in config_manager.environments.items():
                 auth = env.auth_type or "無"
-                tree.insert('', tk.END, values=(name, env.base_url, auth))
-        
+                active = "使用中" if name == current_name else ""
+                row_id = tree.insert('', tk.END, values=(active, name, env.base_url, auth, len(env.variables)))
+                if selected_name and name == selected_name:
+                    tree.selection_set(row_id)
+                    tree.focus(row_id)
+
+            if not selected_name and current_name:
+                for item in tree.get_children():
+                    values = tree.item(item).get('values', [])
+                    if len(values) > 1 and values[1] == current_name:
+                        tree.selection_set(item)
+                        tree.focus(item)
+                        break
+
+            update_preview()
+
+        def update_preview(event=None):
+            name = get_selected_environment_name()
+            if not name:
+                set_preview("選擇環境後可查看 Base URL、認證、預設 Headers 與變數。")
+                return
+
+            env = config_manager.environments.get(name)
+            if not env:
+                set_preview("找不到所選環境。")
+                return
+
+            preview_content = (
+                f"名稱: {env.name}\n"
+                f"Base URL: {env.base_url or '未設定'}\n"
+                f"說明: {env.description or '無'}\n"
+                f"認證: {env.auth_type or '無'}\n"
+                f"認證值: {'已設定' if env.auth_value else '未設定'}\n\n"
+                f"預設 Headers:\n{headers_to_text(env.headers) or '無'}\n\n"
+                f"環境變數:\n{self.format_environment_mapping(env.variables) or '無'}\n\n"
+                "提示: 變數可用在 URL / Headers / Body，例如 {{tenant_id}}"
+            )
+            set_preview(preview_content)
+
         refresh_list()
+        tree.bind('<<TreeviewSelect>>', update_preview)
         
         # 按鈕區
         btn_frame = ttk.Frame(env_win)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
         
         def add_environment():
-            add_win = tk.Toplevel(env_win)
-            add_win.title("新增環境")
-            add_win.geometry("500x400")
-            add_win.transient(env_win)
-            
-            ttk.Label(add_win, text="環境名稱:").grid(row=0, column=0, sticky=tk.W, padx=10, pady=5)
-            name_entry = ttk.Entry(add_win, width=40)
-            name_entry.grid(row=0, column=1, padx=10, pady=5)
-            
-            ttk.Label(add_win, text="基礎 URL:").grid(row=1, column=0, sticky=tk.W, padx=10, pady=5)
-            url_entry = ttk.Entry(add_win, width=40)
-            url_entry.grid(row=1, column=1, padx=10, pady=5)
-            
-            ttk.Label(add_win, text="說明:").grid(row=2, column=0, sticky=tk.W, padx=10, pady=5)
-            desc_entry = ttk.Entry(add_win, width=40)
-            desc_entry.grid(row=2, column=1, padx=10, pady=5)
-            
-            ttk.Label(add_win, text="認證方式:").grid(row=3, column=0, sticky=tk.W, padx=10, pady=5)
-            auth_var = tk.StringVar(value="none")
-            auth_combo = ttk.Combobox(add_win, textvariable=auth_var, 
-                                       values=["none", "bearer", "basic", "api_key"], state="readonly")
-            auth_combo.grid(row=3, column=1, sticky=tk.W, padx=10, pady=5)
-            
-            ttk.Label(add_win, text="認證值:").grid(row=4, column=0, sticky=tk.W, padx=10, pady=5)
-            auth_entry = ttk.Entry(add_win, width=40, show="*")
-            auth_entry.grid(row=4, column=1, padx=10, pady=5)
-            
-            ttk.Label(add_win, text="預設標頭 (Key: Value):").grid(row=5, column=0, sticky=tk.NW, padx=10, pady=5)
-            headers_text = tk.Text(add_win, height=4, width=40, font=("Consolas", 9))
-            headers_text.grid(row=5, column=1, padx=10, pady=5)
-            
-            def save_env():
-                name = name_entry.get().strip()
-                if not name:
-                    messagebox.showwarning("警告", "請輸入環境名稱")
-                    return
-                
-                from utils import parse_headers
-                headers = parse_headers(headers_text.get(1.0, tk.END).strip())
-                
-                auth_type = auth_var.get() if auth_var.get() != "none" else None
-                
-                env = Environment(
-                    name=name,
-                    base_url=url_entry.get().strip(),
-                    description=desc_entry.get().strip(),
-                    auth_type=auth_type,
-                    auth_value=auth_entry.get().strip() if auth_type else None,
-                    headers=headers
-                )
-                config_manager.add_environment(env)
-                refresh_list()
-                self.update_environment_list()
-                add_win.destroy()
-                messagebox.showinfo("成功", f"環境 '{name}' 已新增")
-            
-            ttk.Button(add_win, text="儲存", command=save_env, style='Accent.TButton').grid(
-                row=6, column=1, sticky=tk.E, padx=10, pady=20)
+            self.open_environment_editor(env_win, refresh_list)
+
+        def edit_environment():
+            name = get_selected_environment_name()
+            if not name:
+                messagebox.showwarning("警告", "請先選擇要編輯的環境", parent=env_win)
+                return
+
+            env = config_manager.environments.get(name)
+            if not env:
+                messagebox.showwarning("警告", "找不到所選環境", parent=env_win)
+                return
+
+            self.open_environment_editor(env_win, refresh_list, env=env)
+
+        def activate_environment():
+            name = get_selected_environment_name()
+            if not name:
+                messagebox.showwarning("警告", "請先選擇要套用的環境", parent=env_win)
+                return
+
+            self.current_environment.set(name)
+            self.on_environment_change()
+            refresh_list(selected_name=name)
+            messagebox.showinfo("成功", f"已切換到環境 '{name}'", parent=env_win)
         
         def delete_environment():
-            selection = tree.selection()
-            if not selection:
-                messagebox.showwarning("警告", "請選擇要刪除的環境")
+            name = get_selected_environment_name()
+            if not name:
+                messagebox.showwarning("警告", "請選擇要刪除的環境", parent=env_win)
                 return
-            
-            item = tree.item(selection[0])
-            name = item['values'][0]
-            
-            if messagebox.askyesno("確認刪除", f"確定要刪除環境 '{name}' 嗎？"):
+
+            if messagebox.askyesno("確認刪除", f"確定要刪除環境 '{name}' 嗎？", parent=env_win):
                 config_manager.remove_environment(name)
-                refresh_list()
                 self.update_environment_list()
+                self.current_environment.set(config_manager.current_environment or "無")
+                refresh_list()
+                self.update_environment_context()
+
+        tree.bind('<Double-Button-1>', lambda event: edit_environment())
         
         ttk.Button(btn_frame, text="➕ 新增環境", command=add_environment, style='Accent.TButton').pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✏ 編輯環境", command=edit_environment).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="✅ 設為目前環境", command=activate_environment).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🗑 刪除環境", command=delete_environment).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="關閉", command=env_win.destroy).pack(side=tk.RIGHT, padx=5)
     

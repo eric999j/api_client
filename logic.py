@@ -90,9 +90,11 @@ class ApiClientOrchestrator:
         
         # 解析 URL
         resolved_url = config_manager.resolve_url(url)
+        resolved_headers_text = config_manager.apply_environment_variables(headers_text)
+        resolved_body_text = config_manager.apply_environment_variables(body_text)
         
         # 解析標頭
-        headers = HttpClient.parse_headers(headers_text)
+        headers = HttpClient.parse_headers(resolved_headers_text)
         
         # 套用環境預設標頭
         env = config_manager.get_current_environment()
@@ -110,7 +112,7 @@ class ApiClientOrchestrator:
             method=method.upper(),
             url=resolved_url,
             headers=headers,
-            body=body_text if body_text else None,
+            body=resolved_body_text if resolved_body_text else None,
             timeout=timeout,
             verify_ssl=config.verify_ssl,
             retry_count=retry_count,
@@ -139,11 +141,15 @@ class ApiClientOrchestrator:
         try:
             # 解析 URL (如果新架構可用)
             resolved_url = url
+            resolved_headers_text = headers_text
+            resolved_body_text = body_text
             if NEW_ARCHITECTURE_AVAILABLE:
                 resolved_url = config_manager.resolve_url(url)
+                resolved_headers_text = config_manager.apply_environment_variables(headers_text)
+                resolved_body_text = config_manager.apply_environment_variables(body_text)
             
             # Parse headers
-            headers = parse_headers(headers_text)
+            headers = parse_headers(resolved_headers_text)
             
             # 套用環境標頭和認證 (如果新架構可用)
             if NEW_ARCHITECTURE_AVAILABLE:
@@ -155,7 +161,7 @@ class ApiClientOrchestrator:
                 auth_headers = config_manager.get_auth_headers()
                 headers.update(auth_headers)
             
-            data = body_text if body_text else None
+            data = resolved_body_text if resolved_body_text else None
 
             # 取得 SSL 驗證設定
             verify_ssl = True
