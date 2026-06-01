@@ -4,6 +4,12 @@
 # 核心 HTTP 請求庫
 requests>=2.28.0
 
+# 安全憑證管理 (使用系統金鑰庫儲存 auth token)
+keyring>=23.0.0
+
+# 測試
+pytest>=7.0.0
+
 # 可選: 非同步 HTTP 支援 (未來擴展)
 # aiohttp>=3.8.0
 

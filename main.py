@@ -13,15 +13,9 @@ import os
 import sys
 
 # 初始化核心模組
-try:
-    from config.settings import config_manager, Environment
-    from core.logger import setup_logging, get_logger
-    from core.exceptions import ApiClientError
-    ENTERPRISE_MODE = True
-except ImportError:
-    ENTERPRISE_MODE = False
-    config_manager = None
-    ApiClientError = RuntimeError
+from config.settings import config_manager, Environment
+from core.logger import setup_logging, get_logger
+from core.exceptions import ApiClientError
 
 from logic import ApiClientOrchestrator
 from utils import (
@@ -38,14 +32,11 @@ from utils import (
 )
 
 # 設定日誌
-if ENTERPRISE_MODE:
-    setup_logging(
-        log_level=config_manager.app_config.log_level,
-        log_file=config_manager.app_config.log_file
-    )
-    logger = get_logger(__name__)
-else:
-    logger = None
+setup_logging(
+    log_level=config_manager.app_config.log_level,
+    log_file=config_manager.app_config.log_file
+)
+logger = get_logger(__name__)
 
 class ApiClientApp:
     """企業級 API 測試客戶端應用程式"""
@@ -62,14 +53,10 @@ class ApiClientApp:
         self.root = root
         self._syntax_theme_key = None
         
-        # 使用配置或預設值
-        if ENTERPRISE_MODE:
-            config = config_manager.app_config
-            self.root.title(f"{config.app_name} v{self.VERSION}")
-            self.root.geometry(f"{config.window_width}x{config.window_height}")
-        else:
-            self.root.title(f"API Client - Enterprise Edition v{self.VERSION}")
-            self.root.geometry("1200x900")
+        # 使用配置
+        config = config_manager.app_config
+        self.root.title(f"{config.app_name} v{self.VERSION}")
+        self.root.geometry(f"{config.window_width}x{config.window_height}")
         
         # 設置主題和樣式 (初始化)
         self.setup_styles()
@@ -82,9 +69,7 @@ class ApiClientApp:
         self.orchestrator = ApiClientOrchestrator()
         
         # 環境變數
-        initial_environment = "無"
-        if ENTERPRISE_MODE and config_manager and config_manager.current_environment:
-            initial_environment = config_manager.current_environment
+        initial_environment = config_manager.current_environment or "無"
         self.current_environment = tk.StringVar(value=initial_environment)
         self.url_var = tk.StringVar(value=self.DEFAULT_URL)
         self.environment_summary_var = tk.StringVar(value="")
@@ -92,23 +77,18 @@ class ApiClientApp:
 
         self.create_widgets()
 
-        if ENTERPRISE_MODE and config_manager:
-            self.apply_environment_to_request(None, config_manager.get_current_environment())
+        self.apply_environment_to_request(None, config_manager.get_current_environment())
         self.update_environment_context()
         
         # 確保所有組件創建後應用主題
         self.apply_theme()
         
         # 記錄啟動
-        if ENTERPRISE_MODE and logger:
-            logger.info("API Client 啟動", extra={'user_action': 'app_start'})
+        logger.info("API Client 啟動", extra={'user_action': 'app_start'})
     
     def setup_styles(self):
         """設置現代化主題與配色"""
-        if ENTERPRISE_MODE:
-            self.is_dark_mode = config_manager.app_config.theme == "dark"
-        else:
-            self.is_dark_mode = False
+        self.is_dark_mode = config_manager.app_config.theme == "dark"
             
         self.colors = {
             "light": {
@@ -149,10 +129,8 @@ class ApiClientApp:
     def toggle_theme(self):
         """切換深色/淺色模式"""
         self.is_dark_mode = not self.is_dark_mode
-        
-        if ENTERPRISE_MODE:
-            config_manager.app_config.theme = "dark" if self.is_dark_mode else "light"
-            config_manager.save_config()
+        config_manager.app_config.theme = "dark" if self.is_dark_mode else "light"
+        config_manager.save_config()
             
         self.apply_theme()
 
@@ -292,19 +270,13 @@ class ApiClientApp:
 
         # Timeout Input
         ttk.Label(req_frame, text="逾時(s):", font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(5, 2))
-        default_timeout = "30"
-        if ENTERPRISE_MODE:
-            default_timeout = str(config_manager.app_config.default_timeout)
-        self.timeout_var = tk.StringVar(value=default_timeout)
+        self.timeout_var = tk.StringVar(value=str(config_manager.app_config.default_timeout))
         self.timeout_entry = ttk.Entry(req_frame, textvariable=self.timeout_var, width=4)
         self.timeout_entry.pack(side=tk.LEFT, padx=(0, 5))
         
         # 重試次數
         ttk.Label(req_frame, text="重試:", font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(5, 2))
-        default_retry = "0"
-        if ENTERPRISE_MODE:
-            default_retry = str(config_manager.app_config.retry_count)
-        self.retry_var = tk.StringVar(value=default_retry)
+        self.retry_var = tk.StringVar(value=str(config_manager.app_config.retry_count))
         self.retry_entry = ttk.Entry(req_frame, textvariable=self.retry_var, width=3)
         self.retry_entry.pack(side=tk.LEFT, padx=(0, 5))
 
@@ -424,7 +396,7 @@ class ApiClientApp:
 
     def on_send(self):
         url = self.url_var.get().strip()
-        env = config_manager.get_current_environment() if ENTERPRISE_MODE and config_manager else None
+        env = config_manager.get_current_environment()
 
         if not url:
             if env and env.base_url:
@@ -529,11 +501,10 @@ class ApiClientApp:
                             response.headers, 
                             response.content_size)
         except (ApiClientError, RuntimeError, ValueError, TypeError) as e:
-            if ENTERPRISE_MODE and logger:
-                logger.exception(
-                    f"請求處理失敗: {method} {url}",
-                    extra={'http_method': method, 'url': url}
-                )
+            logger.exception(
+                f"請求處理失敗: {method} {url}",
+                extra={'http_method': method, 'url': url}
+            )
             self.root.after(0, self.update_ui, 0, "", str(e), 0.0, {}, 0)
 
     def update_ui(self, code, content, error, elapsed_time, response_headers, content_size):
@@ -621,8 +592,7 @@ class ApiClientApp:
                 self.response_text.tag_add("json_bool", start, end)
 
         except (tk.TclError, re.error) as e:
-            if ENTERPRISE_MODE and logger:
-                logger.warning(f"語法高亮失敗: {e}")
+            logger.warning(f"語法高亮失敗: {e}")
     
     def set_response_headers(self, text):
         self.response_headers_text.config(state=tk.NORMAL)
@@ -683,9 +653,7 @@ class ApiClientApp:
 
     def get_history_limit(self) -> int:
         """取得歷史記錄上限"""
-        if ENTERPRISE_MODE and config_manager:
-            return max(1, int(config_manager.app_config.max_history_items))
-        return self.FALLBACK_HISTORY_ITEMS
+        return max(1, int(config_manager.app_config.max_history_items))
     
     def add_to_history(self, method, url, headers, body):
         """添加到請求歷史"""
@@ -836,8 +804,7 @@ class ApiClientApp:
     def update_environment_list(self):
         """更新環境下拉選單"""
         env_names = ["無"]
-        if ENTERPRISE_MODE and config_manager:
-            env_names.extend(config_manager.environments.keys())
+        env_names.extend(config_manager.environments.keys())
         self.env_combo['values'] = env_names
 
         selected = self.current_environment.get()
@@ -847,9 +814,7 @@ class ApiClientApp:
 
     def build_resolved_request_url(self, url: str) -> str:
         """建立目前請求的解析後 URL"""
-        if ENTERPRISE_MODE and config_manager:
-            return config_manager.resolve_url(url)
-        return url
+        return config_manager.resolve_url(url)
 
     def apply_environment_to_request(self, previous_env, current_env):
         """依照環境切換結果更新目前請求目標"""
@@ -874,11 +839,6 @@ class ApiClientApp:
     def update_environment_context(self, *args):
         """更新環境摘要與解析後 URL 顯示"""
         if not hasattr(self, 'environment_summary_var'):
-            return
-
-        if not ENTERPRISE_MODE or not config_manager:
-            self.environment_summary_var.set("環境功能未啟用")
-            self.environment_details_var.set("請輸入完整 URL")
             return
 
         env = config_manager.get_current_environment()
@@ -1059,25 +1019,18 @@ class ApiClientApp:
     def on_environment_change(self, event=None):
         """環境變更處理"""
         selected = self.current_environment.get()
-        if ENTERPRISE_MODE and config_manager:
-            previous_env = config_manager.get_current_environment()
-            if selected == "無":
-                config_manager.set_current_environment(None)
-            else:
-                config_manager.set_current_environment(selected)
+        previous_env = config_manager.get_current_environment()
+        if selected == "無":
+            config_manager.set_current_environment(None)
+        else:
+            config_manager.set_current_environment(selected)
 
-            self.apply_environment_to_request(previous_env, config_manager.get_current_environment())
-            self.update_environment_context()
-            
-            if logger:
-                logger.info(f"切換環境: {selected}", extra={'user_action': 'environment_change'})
+        self.apply_environment_to_request(previous_env, config_manager.get_current_environment())
+        self.update_environment_context()
+        logger.info(f"切換環境: {selected}", extra={'user_action': 'environment_change'})
     
     def show_environment_manager(self):
         """顯示環境管理器"""
-        if not ENTERPRISE_MODE:
-            messagebox.showinfo("提示", "環境管理功能需要企業版模組")
-            return
-        
         env_win = tk.Toplevel(self.root)
         env_win.title("環境管理")
         env_win.geometry("820x620")
@@ -1247,21 +1200,21 @@ class ApiClientApp:
         row = 0
         ttk.Label(general_frame, text="預設逾時 (秒):", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        timeout_var = tk.StringVar(value=str(config_manager.app_config.default_timeout if ENTERPRISE_MODE else 30))
+        timeout_var = tk.StringVar(value=str(config_manager.app_config.default_timeout))
         ttk.Entry(general_frame, textvariable=timeout_var, width=10).grid(
             row=row, column=1, sticky=tk.W, pady=5)
         
         row += 1
         ttk.Label(general_frame, text="預設重試次數:", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        retry_var = tk.StringVar(value=str(config_manager.app_config.retry_count if ENTERPRISE_MODE else 0))
+        retry_var = tk.StringVar(value=str(config_manager.app_config.retry_count))
         ttk.Entry(general_frame, textvariable=retry_var, width=10).grid(
             row=row, column=1, sticky=tk.W, pady=5)
         
         row += 1
         ttk.Label(general_frame, text="最大歷史記錄:", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        history_var = tk.StringVar(value=str(config_manager.app_config.max_history_items if ENTERPRISE_MODE else 100))
+        history_var = tk.StringVar(value=str(config_manager.app_config.max_history_items))
         ttk.Entry(general_frame, textvariable=history_var, width=10).grid(
             row=row, column=1, sticky=tk.W, pady=5)
         
@@ -1270,26 +1223,26 @@ class ApiClientApp:
         notebook.add(network_frame, text="網路")
         
         row = 0
-        ssl_var = tk.BooleanVar(value=config_manager.app_config.verify_ssl if ENTERPRISE_MODE else True)
+        ssl_var = tk.BooleanVar(value=config_manager.app_config.verify_ssl)
         ttk.Checkbutton(network_frame, text="驗證 SSL 憑證", variable=ssl_var).grid(
             row=row, column=0, columnspan=2, sticky=tk.W, pady=5)
         
         row += 1
-        proxy_var = tk.BooleanVar(value=config_manager.app_config.proxy_enabled if ENTERPRISE_MODE else False)
+        proxy_var = tk.BooleanVar(value=config_manager.app_config.proxy_enabled)
         ttk.Checkbutton(network_frame, text="啟用代理伺服器", variable=proxy_var).grid(
             row=row, column=0, columnspan=2, sticky=tk.W, pady=5)
         
         row += 1
         ttk.Label(network_frame, text="HTTP Proxy:", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        http_proxy_var = tk.StringVar(value=config_manager.app_config.http_proxy or "" if ENTERPRISE_MODE else "")
+        http_proxy_var = tk.StringVar(value=config_manager.app_config.http_proxy or "")
         ttk.Entry(network_frame, textvariable=http_proxy_var, width=40).grid(
             row=row, column=1, sticky=tk.W, pady=5)
         
         row += 1
         ttk.Label(network_frame, text="HTTPS Proxy:", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        https_proxy_var = tk.StringVar(value=config_manager.app_config.https_proxy or "" if ENTERPRISE_MODE else "")
+        https_proxy_var = tk.StringVar(value=config_manager.app_config.https_proxy or "")
         ttk.Entry(network_frame, textvariable=https_proxy_var, width=40).grid(
             row=row, column=1, sticky=tk.W, pady=5)
         
@@ -1300,7 +1253,7 @@ class ApiClientApp:
         row = 0
         ttk.Label(log_frame, text="日誌等級:", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        log_level_var = tk.StringVar(value=config_manager.app_config.log_level if ENTERPRISE_MODE else "INFO")
+        log_level_var = tk.StringVar(value=config_manager.app_config.log_level)
         log_combo = ttk.Combobox(log_frame, textvariable=log_level_var, 
                                   values=["DEBUG", "INFO", "WARNING", "ERROR"], state="readonly")
         log_combo.grid(row=row, column=1, sticky=tk.W, pady=5)
@@ -1308,32 +1261,28 @@ class ApiClientApp:
         row += 1
         ttk.Label(log_frame, text="日誌檔案:", font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky=tk.W, pady=5)
-        log_file_var = tk.StringVar(value=config_manager.app_config.log_file if ENTERPRISE_MODE else "api_client.log")
+        log_file_var = tk.StringVar(value=config_manager.app_config.log_file)
         ttk.Entry(log_frame, textvariable=log_file_var, width=40).grid(
             row=row, column=1, sticky=tk.W, pady=5)
         
         # 儲存按鈕
         def save_settings():
-            if ENTERPRISE_MODE:
-                try:
-                    config_manager.app_config.default_timeout = int(timeout_var.get())
-                    config_manager.app_config.retry_count = int(retry_var.get())
-                    config_manager.app_config.max_history_items = int(history_var.get())
-                    config_manager.app_config.verify_ssl = ssl_var.get()
-                    config_manager.app_config.proxy_enabled = proxy_var.get()
-                    config_manager.app_config.http_proxy = http_proxy_var.get() or None
-                    config_manager.app_config.https_proxy = https_proxy_var.get() or None
-                    config_manager.app_config.log_level = log_level_var.get()
-                    config_manager.app_config.log_file = log_file_var.get()
-                    
-                    config_manager.save_config()
-                    messagebox.showinfo("成功", "設定已儲存")
-                    settings_win.destroy()
-                except ValueError as e:
-                    messagebox.showerror("錯誤", f"設定值無效: {e}")
-            else:
-                messagebox.showinfo("提示", "完整設定功能需要企業版模組")
+            try:
+                config_manager.app_config.default_timeout = int(timeout_var.get())
+                config_manager.app_config.retry_count = int(retry_var.get())
+                config_manager.app_config.max_history_items = int(history_var.get())
+                config_manager.app_config.verify_ssl = ssl_var.get()
+                config_manager.app_config.proxy_enabled = proxy_var.get()
+                config_manager.app_config.http_proxy = http_proxy_var.get() or None
+                config_manager.app_config.https_proxy = https_proxy_var.get() or None
+                config_manager.app_config.log_level = log_level_var.get()
+                config_manager.app_config.log_file = log_file_var.get()
+                
+                config_manager.save_config()
+                messagebox.showinfo("成功", "設定已儲存")
                 settings_win.destroy()
+            except ValueError as e:
+                messagebox.showerror("錯誤", f"設定值無效: {e}")
         
         btn_frame = ttk.Frame(settings_win)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -1345,19 +1294,15 @@ if __name__ == "__main__":
         # Increase DPI awareness on Windows for sharper text
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
-    except:
+    except Exception:
         pass
     
     # 啟動提示
     print("=" * 50)
     print("  API Client - Enterprise Edition v2.0.0")
     print("=" * 50)
-    if ENTERPRISE_MODE:
-        print(f"  企業版模組: 已載入")
-        print(f"  日誌等級: {config_manager.app_config.log_level}")
-        print(f"  日誌檔案: {config_manager.app_config.log_file}")
-    else:
-        print("  企業版模組: 未載入 (使用基本功能)")
+    print(f"  日誌等級: {config_manager.app_config.log_level}")
+    print(f"  日誌檔案: {config_manager.app_config.log_file}")
     print("=" * 50)
 
     root = tk.Tk()

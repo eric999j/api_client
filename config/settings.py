@@ -3,10 +3,21 @@
 提供集中化的配置管理，支援環境變數覆寫
 """
 import os
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from pathlib import Path
 import json
+
+try:
+    import keyring
+    KEYRING_AVAILABLE = True
+except ImportError:
+    KEYRING_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+KEYRING_SERVICE = "api_client"
 
 
 @dataclass
@@ -104,7 +115,7 @@ class ConfigManager:
                     return AppConfig(**{k: v for k, v in data.items() 
                                        if k in AppConfig.__dataclass_fields__})
             except Exception:
-                pass
+                logger.warning("無法載入配置檔 %s，使用預設值", self._config_file, exc_info=True)
         return AppConfig()
     
     def _load_environments(self) -> Dict[str, Environment]:
@@ -115,17 +126,18 @@ class ConfigManager:
                 with open(self._environments_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for name, env_data in data.items():
+                        auth_value = self._load_credential(name) or env_data.get('auth_value')
                         environments[name] = Environment(
                             name=name,
                             base_url=env_data.get('base_url', ''),
                             variables=env_data.get('variables', {}),
                             headers=env_data.get('headers', {}),
                             auth_type=env_data.get('auth_type'),
-                            auth_value=env_data.get('auth_value'),
+                            auth_value=auth_value,
                             description=env_data.get('description', '')
                         )
             except Exception:
-                pass
+                logger.warning("無法載入環境配置檔 %s，使用預設環境", self._environments_file, exc_info=True)
         
         # 預設環境
         if not environments:
@@ -164,7 +176,7 @@ class ConfigManager:
                 try:
                     setattr(self.app_config, config_key, converter(value))
                 except (ValueError, TypeError):
-                    pass
+                    logger.warning("環境變數 %s 值無效: %s", env_key, value)
     
     def save_config(self):
         """保存應用程式配置"""
@@ -175,22 +187,49 @@ class ConfigManager:
             raise RuntimeError(f"無法保存配置: {e}")
     
     def save_environments(self):
-        """保存環境配置"""
+        """保存環境配置（憑證存入系統金鑰庫）"""
         try:
             data = {}
             for name, env in self.environments.items():
+                self._save_credential(name, env.auth_value)
                 data[name] = {
                     'base_url': env.base_url,
                     'variables': env.variables,
                     'headers': env.headers,
                     'auth_type': env.auth_type,
-                    'auth_value': env.auth_value,
+                    'auth_value': env.auth_value if not KEYRING_AVAILABLE else None,
                     'description': env.description
                 }
             with open(self._environments_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             raise RuntimeError(f"無法保存環境配置: {e}")
+
+    def _save_credential(self, env_name: str, auth_value: Optional[str]):
+        """將憑證存入系統金鑰庫"""
+        if not KEYRING_AVAILABLE:
+            return
+        key = f"{KEYRING_SERVICE}:env:{env_name}"
+        try:
+            if auth_value:
+                keyring.set_password(KEYRING_SERVICE, key, auth_value)
+            else:
+                keyring.delete_password(KEYRING_SERVICE, key)
+        except keyring.errors.PasswordDeleteError:
+            pass
+        except Exception:
+            logger.warning("無法將憑證存入金鑰庫 (env=%s)", env_name, exc_info=True)
+
+    def _load_credential(self, env_name: str) -> Optional[str]:
+        """從系統金鑰庫讀取憑證"""
+        if not KEYRING_AVAILABLE:
+            return None
+        key = f"{KEYRING_SERVICE}:env:{env_name}"
+        try:
+            return keyring.get_password(KEYRING_SERVICE, key)
+        except Exception:
+            logger.warning("無法從金鑰庫讀取憑證 (env=%s)", env_name, exc_info=True)
+            return None
     
     def add_environment(self, env: Environment):
         """新增環境"""

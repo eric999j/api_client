@@ -2,22 +2,15 @@
 API Client Orchestrator - 核心業務邏輯層
 提供 HTTP 請求協調與處理功能
 """
-import requests
 import time
 from typing import Tuple, Dict, Optional, Any
-from utils import DIFY_BLOCKING_RECOMMENDED_TIMEOUT, get_dify_response_mode, parse_headers
 
-# 嘗試匯入新架構模組，如果失敗則使用原有邏輯
-try:
-    from core.http_client import HttpClient, HttpRequest, HttpResponse
-    from core.logger import get_logger
-    from core.exceptions import ApiClientError, ValidationError
-    from config.settings import config_manager
-    NEW_ARCHITECTURE_AVAILABLE = True
-    logger = get_logger(__name__)
-except ImportError:
-    NEW_ARCHITECTURE_AVAILABLE = False
-    logger = None
+from core.http_client import HttpClient, HttpRequest, HttpResponse
+from core.logger import get_logger
+from core.exceptions import ApiClientError, ValidationError
+from config.settings import config_manager
+
+logger = get_logger(__name__)
 
 
 class ApiClientOrchestrator:
@@ -27,23 +20,16 @@ class ApiClientOrchestrator:
     職責:
     - 協調 HTTP 請求的發送
     - 整合配置管理器
-    - 提供向下相容的介面
     """
     
     def __init__(self):
-        if NEW_ARCHITECTURE_AVAILABLE:
-            self._client = HttpClient(
-                verify_ssl=config_manager.app_config.verify_ssl,
-                proxies=self._build_proxies()
-            )
-        else:
-            self._client = None
+        self._client = HttpClient(
+            verify_ssl=config_manager.app_config.verify_ssl,
+            proxies=self._build_proxies()
+        )
     
     def _build_proxies(self) -> Dict[str, str]:
         """構建代理設定"""
-        if not NEW_ARCHITECTURE_AVAILABLE:
-            return {}
-            
         proxies = {}
         config = config_manager.app_config
         
@@ -78,9 +64,6 @@ class ApiClientOrchestrator:
         Returns:
             HttpResponse 物件
         """
-        if not NEW_ARCHITECTURE_AVAILABLE:
-            raise RuntimeError("新架構模組未載入")
-            
         config = config_manager.app_config
         
         if timeout is None:
@@ -120,125 +103,6 @@ class ApiClientOrchestrator:
         )
         
         return self._client.send(request)
-    
-    @staticmethod
-    def send_request(
-        method: str, 
-        url: str, 
-        headers_text: str = "", 
-        body_text: str = "", 
-        timeout: int = 10
-    ) -> Tuple[int, str, Optional[str], float, Dict[str, str], int]:
-        """
-        執行 HTTP 請求並返回結果 (向下相容介面)
-        
-        Returns:
-            Tuple: (status_code, content, error_msg, elapsed_time, response_headers, content_size)
-        """
-        start_time = time.perf_counter()
-        elapsed_time = 0.0
-
-        try:
-            # 解析 URL (如果新架構可用)
-            resolved_url = url
-            resolved_headers_text = headers_text
-            resolved_body_text = body_text
-            if NEW_ARCHITECTURE_AVAILABLE:
-                resolved_url = config_manager.resolve_url(url)
-                resolved_headers_text = config_manager.apply_environment_variables(headers_text)
-                resolved_body_text = config_manager.apply_environment_variables(body_text)
-            
-            # Parse headers
-            headers = parse_headers(resolved_headers_text)
-            
-            # 套用環境標頭和認證 (如果新架構可用)
-            if NEW_ARCHITECTURE_AVAILABLE:
-                env = config_manager.get_current_environment()
-                if env and env.headers:
-                    for key, value in env.headers.items():
-                        if key not in headers:
-                            headers[key] = value
-                auth_headers = config_manager.get_auth_headers()
-                headers.update(auth_headers)
-            
-            data = resolved_body_text if resolved_body_text else None
-
-            # 取得 SSL 驗證設定
-            verify_ssl = True
-            if NEW_ARCHITECTURE_AVAILABLE:
-                verify_ssl = config_manager.app_config.verify_ssl
-
-            response = requests.request(
-                method=method,
-                url=resolved_url,
-                headers=headers,
-                data=data.encode('utf-8') if data else None,
-                timeout=timeout,
-                verify=verify_ssl
-            )
-            elapsed_time = time.perf_counter() - start_time
-            
-            content_size = len(response.content)
-            
-            # 記錄日誌 (如果新架構可用)
-            if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.info(
-                    f"請求完成: {method} {resolved_url} -> {response.status_code}",
-                    extra={
-                        'http_method': method,
-                        'url': resolved_url,
-                        'status_code': response.status_code,
-                        'response_time': elapsed_time * 1000
-                    }
-                )
-            
-            return response.status_code, response.text, None, elapsed_time, dict(response.headers), content_size
-
-        except requests.exceptions.Timeout:
-            elapsed_time = time.perf_counter() - start_time
-            response_mode = get_dify_response_mode(body_text)
-            if response_mode == 'blocking':
-                error_msg = (
-                    f"錯誤: 請求逾時；此請求使用 blocking 模式，"
-                    f"建議將逾時調高至 {int(DIFY_BLOCKING_RECOMMENDED_TIMEOUT)} 秒以上"
-                )
-            else:
-                error_msg = "錯誤: 請求逾時"
-            if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.error(f"請求逾時: {method} {url}")
-            return 0, "", error_msg, elapsed_time, {}, 0
-            
-        except requests.exceptions.SSLError as e:
-            elapsed_time = time.perf_counter() - start_time
-            error_msg = f"錯誤: SSL 憑證驗證失敗 - {str(e)}"
-            if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.error(f"SSL 錯誤: {method} {url} - {e}")
-            return 0, "", error_msg, elapsed_time, {}, 0
-            
-        except requests.exceptions.ConnectionError as e:
-            elapsed_time = time.perf_counter() - start_time
-            error_text = str(e)
-            if 'Read timed out' in error_text or 'read timeout' in error_text.lower():
-                error_msg = f"錯誤: 讀取回應逾時 - {error_text}"
-            else:
-                error_msg = f"錯誤: 連線失敗 - {error_text}"
-            if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.error(f"連線失敗: {method} {url} - {error_text}")
-            return 0, "", error_msg, elapsed_time, {}, 0
-            
-        except requests.exceptions.RequestException as e:
-            elapsed_time = time.perf_counter() - start_time
-            error_msg = f"錯誤: {str(e)}"
-            if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.error(f"請求錯誤: {method} {url} - {e}")
-            return 0, "", error_msg, elapsed_time, {}, 0
-            
-        except Exception as e:
-            elapsed_time = time.perf_counter() - start_time
-            error_msg = f"未預期的錯誤: {str(e)}"
-            if NEW_ARCHITECTURE_AVAILABLE and logger:
-                logger.exception(f"未預期錯誤: {method} {url}")
-            return 0, "", error_msg, elapsed_time, {}, 0
     
     def close(self):
         """關閉客戶端連線"""

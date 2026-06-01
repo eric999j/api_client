@@ -27,19 +27,14 @@ See [README.md](README.md) for feature details and usage instructions.
 
 ## Critical Patterns
 
-### Graceful Degradation via Conditional Imports
+### No Conditional Imports
 
-Enterprise modules (`core/`, `config/`) are conditionally imported. If unavailable, the app falls back to basic `requests` usage:
+Enterprise modules (`core/`, `config/`) are always imported unconditionally. The app requires all modules to be present:
 
 ```python
-try:
-    from core.http_client import HttpClient
-    NEW_ARCHITECTURE_AVAILABLE = True
-except ImportError:
-    NEW_ARCHITECTURE_AVAILABLE = False
+from core.http_client import HttpClient, HttpRequest, HttpResponse
+from config.settings import config_manager, Environment
 ```
-
-**Always check the feature flag** (e.g., `NEW_ARCHITECTURE_AVAILABLE`, `ENTERPRISE_MODE`) before using enterprise components.
 
 ### Thread-Safe UI Updates
 
