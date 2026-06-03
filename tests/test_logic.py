@@ -90,3 +90,49 @@ class TestApiClientOrchestrator:
     def test_close(self, orchestrator):
         """close() should not raise"""
         orchestrator.close()
+
+    @patch('logic.HttpClient')
+    def test_send_request_new_auth_header_overrides_environment(self, mock_client_class):
+        from config.settings import Environment, config_manager
+
+        config_manager.environments["Unit"] = Environment(
+            name="Unit",
+            base_url="http://example.com",
+            variables={},
+            headers={"Authorization": "Bearer env-token", "X-Env": "1"},
+            auth_type="bearer",
+            auth_value="auth-token",
+        )
+        config_manager.set_current_environment("Unit")
+
+        mock_client = MagicMock()
+        mock_response = HttpResponse(
+            status_code=200,
+            headers={},
+            content="ok",
+            elapsed_time=0.1,
+            content_size=2,
+            request_id="test-auth-1",
+        )
+        mock_client.send.return_value = mock_response
+        mock_client_class.return_value = mock_client
+
+        orch = ApiClientOrchestrator()
+        orch._client = mock_client
+
+        orch.send_request_new(
+            method="GET",
+            url="/v1/test",
+            headers_text="X-Request: 1",
+            body_text="",
+            timeout=10,
+            retry_count=0,
+        )
+
+        sent_request = mock_client.send.call_args[0][0]
+        assert sent_request.headers["Authorization"] == "Bearer auth-token"
+        assert sent_request.headers["X-Env"] == "1"
+        assert sent_request.headers["X-Request"] == "1"
+
+        config_manager.set_current_environment(None)
+        config_manager.environments.pop("Unit", None)

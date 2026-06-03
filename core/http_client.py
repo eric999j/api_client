@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 from urllib.parse import urlparse
+from requests.adapters import HTTPAdapter
 
 from .logger import get_logger
 from .exceptions import (
@@ -128,6 +129,9 @@ class HttpClient:
         self.verify_ssl = verify_ssl
         self.proxies = proxies or {}
         self.session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
         
         # 設定預設 headers
         self.session.headers.update(self.default_headers)
@@ -199,34 +203,25 @@ class HttpClient:
         )
 
     @staticmethod
-    def _is_streaming_request(request: HttpRequest) -> bool:
-        """檢查請求主體是否宣告為串流回應模式"""
+    def _get_response_mode(request: HttpRequest) -> Optional[str]:
+        """取得請求主體宣告的 response_mode"""
         if not request.body:
-            return False
+            return None
 
         try:
             payload = json.loads(request.body)
         except (TypeError, ValueError, json.JSONDecodeError):
-            return False
+            return None
 
-        return str(payload.get('response_mode', '')).lower() == 'streaming'
-
-    @staticmethod
-    def _is_blocking_request(request: HttpRequest) -> bool:
-        """檢查請求主體是否宣告為 blocking 回應模式"""
-        if not request.body:
-            return False
-
-        try:
-            payload = json.loads(request.body)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return False
-
-        return str(payload.get('response_mode', '')).lower() == 'blocking'
+        mode = payload.get('response_mode')
+        if mode is None:
+            return None
+        return str(mode).lower()
     
     def _execute_request(self, request: HttpRequest, request_id: str) -> HttpResponse:
         """執行實際的 HTTP 請求"""
         start_time = time.perf_counter()
+        response_mode = self._get_response_mode(request)
         
         try:
             # 合併 headers
@@ -260,7 +255,7 @@ class HttpClient:
         except requests.exceptions.Timeout as e:
             elapsed_time = time.perf_counter() - start_time
             message = f"請求逾時 (>{request.timeout}秒)"
-            if self._is_blocking_request(request):
+            if response_mode == 'blocking':
                 message += "；此請求使用 blocking 模式，建議將逾時調高至 60 秒以上"
             raise TimeoutError(
                 message,
@@ -281,9 +276,9 @@ class HttpClient:
 
             if 'Read timed out' in error_text or 'read timeout' in error_text.lower():
                 message = f"讀取回應逾時 (>{request.timeout}秒)"
-                if self._is_streaming_request(request):
+                if response_mode == 'streaming':
                     message += "；此請求使用 streaming 模式，伺服器可能尚未送出下一個事件"
-                elif self._is_blocking_request(request):
+                elif response_mode == 'blocking':
                     message += "；此請求使用 blocking 模式，建議將逾時調高至 60 秒以上"
 
                 raise TimeoutError(

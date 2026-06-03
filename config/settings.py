@@ -4,6 +4,7 @@
 """
 import os
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -81,6 +82,7 @@ class ConfigManager:
     _config_dir = Path.home() / ".api_client"
     _config_file = _config_dir / "config.json"
     _environments_file = _config_dir / "environments.json"
+    _variable_pattern = re.compile(r"\{\{(\w+)\}\}")
     
     def __new__(cls):
         if cls._instance is None:
@@ -262,11 +264,16 @@ class ConfigManager:
             return text
 
         env = self.get_current_environment()
-        if env and env.variables:
-            for key, value in env.variables.items():
-                text = text.replace(f"{{{{{key}}}}}", value)
+        if not env or not env.variables or "{{" not in text:
+            return text
 
-        return text
+        variables = env.variables
+
+        def replace_match(match):
+            key = match.group(1)
+            return variables.get(key, match.group(0))
+
+        return self._variable_pattern.sub(replace_match, text)
     
     def resolve_url(self, url: str) -> str:
         """解析 URL - 替換變數並套用基礎 URL"""

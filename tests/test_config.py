@@ -165,6 +165,27 @@ class TestConfigManager:
         result = mgr.apply_environment_variables("{{host}}:{{port}}/api")
         assert result == "localhost:3000/api"
 
+    def test_apply_environment_variables_unknown_kept(self, tmp_path, monkeypatch):
+        env_file = tmp_path / "environments.json"
+        env_file.write_text(json.dumps({
+            "Dev": {
+                "base_url": "http://localhost",
+                "variables": {"host": "localhost"},
+                "headers": {},
+                "description": ""
+            }
+        }))
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"current_environment": "Dev"}))
+
+        monkeypatch.setattr(ConfigManager, '_config_dir', tmp_path)
+        monkeypatch.setattr(ConfigManager, '_config_file', config_file)
+        monkeypatch.setattr(ConfigManager, '_environments_file', env_file)
+
+        mgr = ConfigManager()
+        result = mgr.apply_environment_variables("{{host}}/{{missing}}")
+        assert result == "localhost/{{missing}}"
+
     def test_env_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ConfigManager, '_config_dir', tmp_path)
         monkeypatch.setattr(ConfigManager, '_config_file', tmp_path / "config.json")
